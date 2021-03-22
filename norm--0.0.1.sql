@@ -15,14 +15,14 @@ begin
 end;
 $$;
 
+
+
 /*create type input_parameters as (
     parameter_name text,
     data_type text
 );*/
 
-/*
-    IMPLEMENTATION
-*/
+
 -- creates function input parameters with p_ prefix
 create or replace function _parameter_generator(text[])
   returns text
@@ -138,6 +138,10 @@ begin
 end;
 $$;
 
+
+/*
+    IMPLEMENTATION
+*/
 
 
 create or replace function norm_insert(
@@ -272,6 +276,26 @@ $func$;';
 
 end;
 $$;
+
+
+
+/*create or replace function norm_get(
+    p_tables text[],
+    p_columns text[],
+    p_filters text[] default null
+)
+  returns boolean
+  language plpgsql
+as
+$$
+declare
+    v_function_name text := array_to_string(p_tables,',');
+    v_filters text;
+begin
+    perform
+end;
+$$;
+*/
 
 
 

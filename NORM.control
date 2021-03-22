@@ -1,4 +1,4 @@
-# NORM extension
+# norm extension
 comment = 'Removing ORM one function at a time'
 default_version = '0.0.1'
 relocatable = true

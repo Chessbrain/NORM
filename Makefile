@@ -1,5 +1,5 @@
-EXTENSION = NORM
-DATA = NORM-0.0.1.sql
+EXTENSION = norm
+DATA = norm--0.0.1.sql
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
