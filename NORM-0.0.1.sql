@@ -77,13 +77,13 @@ as
 $$
 declare
     v_where_clause text[];
-    v_condition_type text := case when p_and then E'\tand' else E'\or' end;
+    v_condition_type text := case when p_and then E'\tand' else E'\tor' end;
 begin
     if p_is_null then
-        select array_agg('(p_'||c||' is null or '||c||' = '||'p_'||c||E')\n') into v_where_clause
+        select array_agg('(p_'||c||' is null or '||c||' = '||'p_'||c||E')\n\t') into v_where_clause
         from unnest(p_columns) c;
     else
-        select array_agg('('||c||' = '||'p_'||c||E')\n') into v_where_clause
+        select array_agg('('||c||' = '||'p_'||c||E')\n\t') into v_where_clause
         from unnest(p_columns) c;
     end if;
 
@@ -230,6 +230,48 @@ $func$;';
 end;
 $$;
 
+
+
+create or replace function norm_delete(
+    p_table_name text,
+    p_filters text[]
+)
+  returns boolean
+  language plpgsql
+as
+$$
+declare
+    v_input_parameters text;
+    v_filters text;
+    v_query text;
+    v_success boolean := true;
+begin
+    perform _check_columns(p_table_name,p_filters);
+
+    v_input_parameters = _parameter_generator(p_table_name,p_filters);
+    v_filters = _where_generator(p_filters);
+
+    v_query =
+'create or replace function delete_'||p_table_name||'('||v_input_parameters||')
+  returns boolean
+  language plpgsql
+  security definer
+as
+$func$
+begin
+    delete from '||p_table_name||
+    E'\n\twhere '||v_filters||';
+
+    return found;
+end;
+$func$;';
+
+    execute v_query;
+
+    return v_success;
+
+end;
+$$;
 
 
 
