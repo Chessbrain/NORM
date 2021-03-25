@@ -17,11 +17,25 @@ $$;
 
 
 
-/*create type input_parameters as (
+/*create type return_columns as (
+    column_name text,
+    data_type text
+);
+
+
+create type table_columns as (
+    table_name text,
+    column_name text,
+    data_type text
+);
+
+
+
+create type parameters as (
     parameter_name text,
     data_type text
-);*/
-
+);
+*/
 
 -- creates function input parameters with p_ prefix
 create or replace function _parameter_generator(text[])
@@ -64,7 +78,7 @@ end;
 $$;
 
 
-
+-- where clause generator, p_is_null - turns all parameters into optional filters, p_and - true = and, false = or
 create or replace function _where_generator(
     p_columns text[],
     p_is_null boolean default false,
@@ -87,15 +101,56 @@ begin
         from unnest(p_columns) c;
     end if;
 
-    return array_to_string(v_where_clause,v_condition_type,'null');
+    return rtrim(array_to_string(v_where_clause,v_condition_type,'null'),E'\n\t');
+end;
+$$;
+
+create or replace function _get_sequence_keys(
+    p_tables text[]
+)
+  returns text[]
+  language plpgsql
+as
+$$
+declare
+    v_result text[];
+begin
+    select array_agg(distinct c.relname) into v_result
+    from pg_class c
+        join information_schema.tables t on t.table_name = c.relname
+    where t.table_name = any(p_tables)
+        and relname ~* 'seq';
+
+    return v_result;
 end;
 $$;
 
 
 
+create or replace function _table_columns(
+    p_tables text[],
+    p_columns text[]
+)
+  returns table(
+    table_name text,
+    column_name text
+  )
+  language plpgsql
+as
+$$
+begin
+    return query
+    select c.table_name::text, c.column_name::text
+    from information_schema.columns c
+    where c.table_name = any(p_tables)
+        and c.column_name = any(p_columns);
+end;
+$$;
+
+
 -- checks if columns specified exist for this table (p_not_null checks for non-nullable columns)
 create or replace function _check_columns(
-    p_table_name text,
+    p_tables text[],
     p_columns text[],
     p_not_null boolean default false
 )
@@ -108,26 +163,34 @@ declare
     a_missing_columns text[];
     v_success boolean := true;
 begin
-    if not exists(select from information_schema.tables t where t.table_name = p_table_name) then
+    if p_tables is null or p_columns is null or array_length(p_tables,1) is null or array_length(p_columns,1) is null
+    then
+        raise 'Please specify valid table(s) and column(s).' using errcode = 'N0000';
+    end if;
+
+    if not exists(select from information_schema.tables t where t.table_name = any(p_tables)) then
         raise 'Specified table does not exist, please create it first' using errcode = 'N0001';
     end if;
 
     select array_agg(ic) into a_missing_columns
     from unnest(p_columns) ic
-        left join information_schema.columns c on c.column_name = ic and c.table_name = p_table_name
+        left join information_schema.columns c on c.column_name = ic
+            and c.table_name = any(p_tables)
+            and pg_get_serial_sequence(c.table_name,c.column_name) is null
     where c.column_name is null;
 
     if exists (select from unnest(a_missing_columns) mc where mc is not null) then
-        raise 'Specified column(s): %, do not exist in table %.', array_to_string(a_missing_columns,',','null'),p_table_name using errcode = 'N0002';
+        raise 'Specified column(s): %, do not exist.', array_to_string(a_missing_columns,',','null') using errcode = 'N0002';
     end if;
 
     if p_not_null then
         select array_agg(c.column_name) into a_missing_columns
         from information_schema.columns c
             left join unnest(p_columns) ic on ic = c.column_name
-        where c.table_name = p_table_name
+        where c.table_name = any(p_tables)
             and c.is_nullable = 'NO'
-            and ic is null;
+            and ic is null
+            and pg_get_serial_sequence(c.table_name,c.column_name) is null;
 
         if exists (select from unnest(a_missing_columns) mc where mc is not null) then
             raise 'Missing non-nullable column(s): %.', array_to_string(a_missing_columns,',','null') using errcode = 'N0003';
@@ -138,10 +201,124 @@ begin
 end;
 $$;
 
+create or replace function _check_columns(
+    p_tables text,
+    p_columns text[],
+    p_not_null boolean default false
+)
+  returns boolean
+  language plpgsql
+  security definer
+as
+$$
+begin
+    return _check_columns(array[p_tables],p_columns,p_not_null);
+end;
+$$;
+
+create or replace function _return_generator(
+    p_tables text[],
+    p_columns text[]
+)
+  returns text
+  language plpgsql
+as
+$$
+declare
+    v_return text[];
+begin
+    select array_agg(E'\n\t'||x.column_name||' '||x.data_type order by x.column_name) into v_return
+    from (
+        select distinct c.column_name, c.data_type
+        from information_schema.columns c
+        where c.table_name = any(p_tables)
+            and c.column_name = any(p_columns)
+    ) x;
+
+    return array_to_string(v_return,',');
+end;
+$$;
+
+
+
+create or replace function _from_generator(text)
+  returns text
+  language sql
+  immutable
+  strict
+as
+$$
+    select 'from '||$1;
+$$;
+
+
+
+create or replace function _join_generator(
+    p_tables text[]
+)
+  returns text
+  language plpgsql
+as
+$$
+declare
+    v_from text := _from_generator(p_tables[1]);
+    a_joins text[];
+    a_query_string text[] := array_agg(v_from);
+begin
+    select
+        array_agg(
+            case
+                when p_tables[1] = kcu.table_name then
+                    'join '||ccu.table_name||' on '||ccu.table_name||'.'||ccu.column_name ||' = '|| kcu.table_name||'.'||kcu.column_name
+                else
+                    'join '||kcu.table_name||' on '||kcu.table_name||'.'||kcu.column_name ||' = '|| ccu.table_name||'.'||ccu.column_name
+            end)
+    into a_joins
+    from information_schema.table_constraints c
+        join information_schema.key_column_usage kcu on kcu.constraint_name = c.constraint_name
+        join information_schema.constraint_column_usage ccu on ccu.constraint_name = c.constraint_name
+    where c.constraint_type = 'FOREIGN KEY'
+        and kcu.table_name = any(p_tables)
+        and ccu.table_name = any(p_tables);
+
+    a_query_string := array_cat(a_query_string,a_joins);
+
+    return array_to_string(a_query_string,E'\n\t');
+end;
+$$;
+
+
+
+create or replace function _select_generator(
+    p_tables text[],
+    p_columns text[]
+)
+  returns text
+  language plpgsql
+as
+$$
+declare
+    v_select text[];
+begin
+    select array_agg(E'\n\t'||x.table_name||'.'||x.column_name order by x.column_name) into v_select
+    from (
+        select distinct on(c.column_name) c.table_name, c.column_name
+        from information_schema.columns c
+        where c.table_name = any(p_tables)
+            and c.column_name = any(p_columns)
+        order by c.column_name,c.table_name
+    ) x;
+
+    return array_to_string(v_select,',');
+end;
+$$;
+
+
 
 /*
     IMPLEMENTATION
 */
+
 
 
 create or replace function norm_insert(
@@ -292,11 +469,10 @@ declare
     v_function_name text := array_to_string(p_tables,',');
     v_filters text;
 begin
-    perform
+
 end;
 $$;
 */
-
 
 
 
