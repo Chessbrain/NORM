@@ -32,8 +32,6 @@ begin
     return found;
 end;
 $$;
-
-alter function insert_games(text) owner to postgres;
 ```
 
 ## norm_update
@@ -66,8 +64,6 @@ begin
     return found;
 end;
 $$;
-
-alter function update_games(bigint, text) owner to postgres;
 ```
 This function may return the following error code(s):
 
@@ -104,8 +100,6 @@ begin
     return found;
 end;
 $$;
-
-alter function delete_games(bigint) owner to postgres;
 ```
 
 ## norm_get
@@ -138,8 +132,6 @@ begin
     where (users.first_name = p_first_name);
 end;
 $$;
-
-alter function get_users_deposits(text) owner to postgres;
 ```
 
 
