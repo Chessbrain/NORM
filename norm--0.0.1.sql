@@ -74,6 +74,48 @@ end;
 $$;
 
 
+-- p_function_type (get, insert etc.). This generates name of the function, removes need to write this piece of code over and over.
+create or replace function _function_name_generator(
+    p_function_name text,
+    p_function_type text,
+    p_tables text[]
+)
+  returns text
+  language plpgsql
+  immutable
+as
+$$
+declare
+    v_result text;
+begin
+    select coalesce(p_function_name, concat(p_function_type,'_',array_to_string(p_tables,','))) into v_result;
+
+    return v_result;
+end;
+$$;
+
+
+-- Scalar overload of the original implementation
+create or replace function _function_name_generator(
+    p_function_name text,
+    p_function_type text,
+    p_tables text
+)
+  returns text
+  language plpgsql
+  immutable
+as
+$$
+declare
+    v_result text;
+begin
+    select _function_name_generator(p_function_name, p_function_type, array[p_tables]) into v_result;
+
+    return v_result;
+end;
+$$;
+
+
 -- mapper, returns which columns belong to which table
 create or replace function _table_columns(
     p_tables text[],
@@ -111,13 +153,14 @@ declare
     v_where_clause text[];
     v_condition_type text := case when p_and then E'\tand' else E'\tor' end;
 begin
-    if p_is_null then
-        select array_agg('(p_'||c||' is null or '||c||' = '||'p_'||c||E')\n\t') into v_where_clause
-        from unnest(p_columns) c;
-    else
-        select array_agg('('||c||' = '||'p_'||c||E')\n\t') into v_where_clause
-        from unnest(p_columns) c;
-    end if;
+    select
+        case when p_is_null then
+            array_agg('(p_'||c||' is null or '||c||' = '||'p_'||c||E')\n\t')
+        else
+            array_agg('('||c||' = '||'p_'||c||E')\n\t')
+        end
+    into v_where_clause
+    from unnest(p_columns) c;
 
     return rtrim(array_to_string(v_where_clause,v_condition_type,'null'),E'\n\t');
 end;
@@ -140,11 +183,10 @@ declare
     v_condition_type text := case when p_and then E'\tand' else E'\tor' end;
 begin
     select
-        case
-            when p_is_null then
-                array_agg('(p_'||x.column_name||' is null or '||x.table_name||'.'||x.column_name||' = '||'p_'||x.column_name||E')\n\t')
-            else
-                array_agg('('||x.table_name||'.'||x.column_name||' = '||'p_'||x.column_name||E')\n\t')
+        case when p_is_null then
+            array_agg('(p_'||x.column_name||' is null or '||x.table_name||'.'||x.column_name||' = '||'p_'||x.column_name||E')\n\t')
+        else
+            array_agg('('||x.table_name||'.'||x.column_name||' = '||'p_'||x.column_name||E')\n\t')
         end
     into v_where_clause
     from (
@@ -350,9 +392,11 @@ $$;
 
 
 -- creates insert function (cannot handle multiple tables for now)
+drop function if exists norm_insert(p_table_name text, p_columns text[]);
 create or replace function norm_insert(
     p_table_name text,
-    p_columns text[]
+    p_columns text[],
+    p_function_name text default null
 )
   returns boolean
   language plpgsql
@@ -364,14 +408,16 @@ declare
     v_column_names text := array_to_string(p_columns,',');
     v_success boolean := true;
     v_query text;
+    v_function_name text;
 begin
     perform _check_columns(p_table_name,p_columns,true);
 
     v_input_parameters = _parameter_generator(p_table_name,p_columns);
     v_insert_parameters = _parameter_generator(p_columns);
+    v_function_name = _function_name_generator(p_function_name, 'insert', p_table_name);
 
     v_query =
-'create or replace function insert_'||p_table_name||'('||v_input_parameters||')
+'create or replace function '||v_function_name||'('||v_input_parameters||')
   returns boolean
   language plpgsql
   security definer
@@ -393,10 +439,12 @@ $$;
 
 
 -- creates update function (cannot handle multiple tables for now)
+drop function if exists norm_update(p_table_name text, p_columns text[], p_filter_columns text[]);
 create or replace function norm_update(
     p_table_name text,
     p_columns text[],
-    p_filter_columns text[]
+    p_filter_columns text[],
+    p_function_name text default null
 )
   returns boolean
   language plpgsql
@@ -409,6 +457,7 @@ declare
     v_where_clause text;
     v_success boolean := true;
     v_query text;
+    v_function_name text;
 begin
     if p_filter_columns is null then raise 'Cannot create update function without filter(s).' using errcode = 'N0004'; end if;
 
@@ -418,9 +467,10 @@ begin
     v_input_parameters = _parameter_generator(p_table_name,v_generator_input);
     v_update_parameters = _parameter_generator(p_table_name,p_columns,true);
     v_where_clause = _where_generator(p_filter_columns);
+    v_function_name = _function_name_generator(p_function_name, 'update', p_table_name);
 
     v_query =
-'create or replace function update_'||p_table_name||'('||v_input_parameters||')
+'create or replace function '||v_function_name||'('||v_input_parameters||')
   returns boolean
   language plpgsql
   security definer
@@ -442,9 +492,11 @@ $$;
 
 
 -- creates delete function (cannot handle multiple tables for now)
+drop function norm_delete(p_table_name text, p_filters text[]);
 create or replace function norm_delete(
     p_table_name text,
-    p_filters text[]
+    p_filters text[],
+    p_function_name text default null
 )
   returns boolean
   language plpgsql
@@ -454,15 +506,17 @@ declare
     v_input_parameters text;
     v_where_clause text;
     v_query text;
+    v_function_name text;
     v_success boolean := true;
 begin
     perform _check_columns(p_table_name,p_filters);
 
     v_input_parameters = _parameter_generator(p_table_name,p_filters);
     v_where_clause = _where_generator(p_filters);
+    v_function_name = _function_name_generator(p_function_name, 'delete', p_table_name);
 
     v_query =
-'create or replace function delete_'||p_table_name||'('||v_input_parameters||')
+'create or replace function '||v_function_name||'('||v_input_parameters||')
   returns boolean
   language plpgsql
   security definer
@@ -496,7 +550,7 @@ create or replace function norm_get(
 as
 $$
 declare
-    v_function_name text := coalesce(p_function_name,'get_'||array_to_string(p_tables,'_'));
+    v_function_name text;
     v_input_parameters text := '';
     v_returns_table text;
     v_select_clause text;
@@ -516,6 +570,7 @@ begin
     v_select_clause = _select_generator(p_tables,p_columns);
     v_from_join_clause = _join_generator(p_tables);
     v_where_clause = coalesce(E'\n\twhere '||_where_generator(p_tables,p_filters),'');
+    v_function_name = _function_name_generator(p_function_name, 'get', p_tables);
 
     v_query =
 'create or replace function '||v_function_name||'('||v_input_parameters||E')
