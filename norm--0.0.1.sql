@@ -17,6 +17,22 @@ end;
 $$;
 
 
+-- polymorphic data type converter
+create or replace function try_cast(
+    p_input text,
+    inout p_output anyelement
+)
+  returns anyelement
+  language plpgsql
+as
+$$
+begin
+    execute format('select %L::%s', p_input, pg_typeof(p_output)) into p_output;
+    exception when others then
+end;
+$$;
+
+
 -- creates function input parameters with p_ prefix
 create or replace function _parameter_generator(text[])
   returns text
