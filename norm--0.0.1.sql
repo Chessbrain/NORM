@@ -432,20 +432,20 @@ begin
     v_insert_parameters = _parameter_generator(p_columns);
     v_function_name = _function_name_generator(p_function_name, 'insert', p_table_name);
 
-    v_query =
-'create or replace function '||v_function_name||'('||v_input_parameters||')
+    v_query = format(
+'create or replace function %s (%s)
   returns boolean
   language plpgsql
   security definer
 as
 $func$
 begin
-    insert into '||p_table_name||'('||v_column_names||')
-    values('||v_insert_parameters||');
+    insert into %s (%s)
+    values(%s);
 
     return found;
 end;
-$func$;';
+$func$;', v_function_name, v_input_parameters, p_table_name, v_column_names, v_insert_parameters);
 
     execute v_query;
 
@@ -485,20 +485,20 @@ begin
     v_where_clause = _where_generator(p_filter_columns);
     v_function_name = _function_name_generator(p_function_name, 'update', p_table_name);
 
-    v_query =
-'create or replace function '||v_function_name||'('||v_input_parameters||')
+    v_query = format(
+'create or replace function %s (%s)
   returns boolean
   language plpgsql
   security definer
 as
 $func$
 begin
-    update '||p_table_name||' set'||v_update_parameters||
-    E'\n\twhere '||v_where_clause||E'\t;
+    update %s set   %s
+    where %s;
 
     return found;
 end;
-$func$;';
+$func$;', v_function_name, v_input_parameters, p_table_name, v_update_parameters, v_where_clause);
 
     execute v_query;
 
@@ -508,7 +508,7 @@ $$;
 
 
 -- creates delete function (cannot handle multiple tables for now)
-drop function norm_delete(p_table_name text, p_filters text[]);
+drop function if exists norm_delete(p_table_name text, p_filters text[]);
 create or replace function norm_delete(
     p_table_name text,
     p_filters text[],
@@ -531,20 +531,20 @@ begin
     v_where_clause = _where_generator(p_filters);
     v_function_name = _function_name_generator(p_function_name, 'delete', p_table_name);
 
-    v_query =
-'create or replace function '||v_function_name||'('||v_input_parameters||')
+    v_query = format(
+'create or replace function %s (%s)
   returns boolean
   language plpgsql
   security definer
 as
 $func$
 begin
-    delete from '||p_table_name||
-    E'\n\twhere '||v_where_clause||';
+    delete from %s
+    where %s;
 
     return found;
 end;
-$func$;';
+$func$;', v_function_name, v_input_parameters, p_table_name, v_where_clause);
 
     execute v_query;
 
@@ -588,20 +588,22 @@ begin
     v_where_clause = coalesce(E'\n\twhere '||_where_generator(p_tables,p_filters),'');
     v_function_name = _function_name_generator(p_function_name, 'get', p_tables);
 
-    v_query =
-'create or replace function '||v_function_name||'('||v_input_parameters||E')
-  returns table (\n\t' ||
-v_returns_table||')
+    v_query = format(
+'create or replace function %s (%s)
+  returns table (
+    %s
+  )
   language plpgsql
   security definer
 as
 $func$
 begin
     return query
-    select '||v_select_clause||E'\n\t'||v_from_join_clause||
-    v_where_clause||';
+    select %s
+    %s
+    %s;
 end;
-$func$;';
+$func$;', v_function_name, v_input_parameters, v_returns_table, v_select_clause, v_from_join_clause, v_where_clause);
 
     execute v_query;
 
